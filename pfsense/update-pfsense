@@ -1,0 +1,142 @@
+#!/bin/bash
+# Ce script a besoin de Python3 et de lxml
+# => pip3 install lxml
+# Afin d'adapter à votre environnement,
+# Merci de disposer de vos certificats selon cette structure :
+# /etc/letsencrypt/live/a/cert.pem
+# /etc/letsencrypt/live/a/privkey.pem
+# /etc/letsencrypt/live/a/chain.pem
+# /etc/letsencrypt/live/b/cert.pem
+# /etc/letsencrypt/live/b/privkey.pem
+# /etc/letsencrypt/live/b/chain.pem
+# /etc/letsencrypt/live/c/cert.pem
+# /etc/letsencrypt/live/c/privkey.pem
+# /etc/letsencrypt/live/c/chain.pem
+# Renseigner $list et $dir :
+# list="a b c"
+# dir=/etc/letsencrypt/live
+#
+##################### Partie à configurer #####################
+sshpass='root@pfsense.localdomain'
+list="integ.tk pfsense.localdomain"
+dir="/etc/letsencrypt/live"
+############################# Fin #############################
+
+info_report() {
+    echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+    echo "[Info]$1"
+    echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+}
+
+
+err_report() {
+    echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
+    echo "[Error]$1"
+    echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+    exit $2
+}
+
+############################# Main ############################
+
+configFile=/tmp/config.xml
+outputFile=/tmp/output.xml
+
+ssh $sshpass cat /cf/conf/config.xml > $configFile
+cp $configFile $outputFile
+
+for d in $list
+do
+
+  info_report "Traitement de '$d'"
+
+  # cert.pem  chain.pem  fullchain.pem  privkey.pem
+  cert64=$(cat /etc/letsencrypt/live/$d/cert.pem | base64 -w 0)
+  priv64=$(cat /etc/letsencrypt/live/$d/privkey.pem | base64 -w 0)
+  chain64=$(cat /etc/letsencrypt/live/$d/chain.pem | base64 -w 0)
+
+  python3 - << EOF
+import lxml.etree
+parser = lxml.etree.XMLParser(strip_cdata=False)
+
+def cert_replace(root):
+  for i in range(len(root)):
+    if root[i].tag == 'cert':
+      # root[i][0].tag 'refid' NA
+      # root[i][1].tag 'descr' NA
+      # root[i][2].tag 'prv' priv64
+      # root[i][3].tag 'crt' cert64
+      # root[i][4].tag 'caref'
+      if "$d" == root[i][1].text:
+
+        for j in range(len(root[i])):
+          if root[i][j].tag == "prv":
+            root[i][j].text = "$priv64"
+          if root[i][j].tag == "crt":
+            root[i][j].text = "$cert64"
+          if root[i][j].tag == "caref":
+            caref = root[i][j].text
+
+        for i in range(len(root)):
+          # root[i][0].tag 'refid' NA
+          # root[i][1].tag 'descr' NA
+          # root[i][2].tag 'crt' priv64
+          # root[i][3].tag 'serial' cert64
+          if root[i].tag == 'ca' and root[i][0].text == caref:
+            for j in range(len(root[i])):
+              if root[i][j].tag == "crt":
+                root[i][j].text = "$chain64"
+
+with open(r'$outputFile', encoding="utf8") as f:
+  XML = lxml.etree.parse(f, parser)
+  root = XML.getroot()
+  cert_replace(root)
+  XML.write("$outputFile", xml_declaration=True)
+EOF
+done
+
+python3 - << EOF
+import lxml.etree
+parser = lxml.etree.XMLParser(strip_cdata=False)
+
+def cleanNode(root):
+  if len(root) > 0:
+    for i in range(len(root)):
+      if len(root[i]) > 0 :
+        cleanNode(root[i])
+      if root[i].text is None:
+        root[i].text = ""
+
+with open(r'$outputFile', encoding="utf8") as f:
+  XML = lxml.etree.parse(f, parser)
+  root = XML.getroot()
+  cleanNode(root)
+  XML.write("$outputFile", xml_declaration=True)
+EOF
+
+info_report "Dernier traitement"
+# Ajout de \n a la fin du fichier
+echo "" >> $outputFile
+
+# Format XML comme
+var='<?xml version="1.0"?>'
+sed -i "1s/.*/$var/" $outputFile
+
+if [[ $(head -1 $configFile) != $(head -1 $outputFile) ]]; then
+        err_report "l'entete est different" 1
+fi
+
+if [[ $(diff $configFile $outputFile -u) != "" ]];
+then
+
+        info_report  "Debut de la mise a jour de la conf Pfsense"
+        backup=/backup/$(date +%Y%m%d%H%M)
+        mkdir -p $backup
+        cp $configFile  $backup/$(basename $configFile).origin
+        cp $outputFile  $backup/$(basename $outputFile).upload
+        cat  $outputFile | ssh $sshpass "cat > /cf/conf/config.xml"
+        ssh $sshpass "rm /tmp/config.cache"
+        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh stop"
+        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh start"
+        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh status"
+        info_report  "Fin de la mise a jour de la conf Pfsense"
+fi
