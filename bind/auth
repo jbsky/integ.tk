@@ -1,0 +1,13 @@
+#!/bin/sh
+
+keyfile=/etc/bind/tsig.key
+server=$(cat /etc/resolv.conf |grep nameserver | awk '{print $2}')
+domain=$(expr match "_acme-challenge.$CERTBOT_DOMAIN" '.*\.\(.*\..*\)')
+echo "domain: $domain"
+echo "trying : update add _acme-challenge.$CERTBOT_DOMAIN 60 txt $CERTBOT_VALIDATION"
+nsupdate -d -k $keyfile <<EOT
+server $server
+zone $domain
+update add _acme-challenge.$CERTBOT_DOMAIN 60 txt $CERTBOT_VALIDATION
+send
+EOT
