@@ -22,32 +22,27 @@ list="integ.tk pfsense.localdomain"
 dir="/etc/letsencrypt/live"
 ############################# Fin #############################
 
-info_report() {
-    echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-    echo "[Info]$1"
-    echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
-}
+define(){ IFS='\n' read -r -d '' ${1} || true; }
 
+info_report() {
+MSG="[Info] $1"
+echo $MSG
+logger $MSG
+}
 
 err_report() {
-    echo ">>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>"
-    echo "[Error]$1"
-    echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
-    exit $2
+MSG="[Err] $1"
+echo $MSG
+logger $MSG
 }
-
-############################# Main ############################
 
 configFile=/tmp/config.xml
 outputFile=/tmp/output.xml
 
 ssh $sshpass cat /cf/conf/config.xml > $configFile
 cp $configFile $outputFile
-
 for d in $list
 do
-
-  info_report "Traitement de '$d'"
 
   # cert.pem  chain.pem  fullchain.pem  privkey.pem
   cert64=$(cat /etc/letsencrypt/live/$d/cert.pem | base64 -w 0)
@@ -113,7 +108,6 @@ with open(r'$outputFile', encoding="utf8") as f:
   XML.write("$outputFile", xml_declaration=True)
 EOF
 
-info_report "Dernier traitement"
 # Ajout de \n a la fin du fichier
 echo "" >> $outputFile
 
@@ -122,21 +116,25 @@ var='<?xml version="1.0"?>'
 sed -i "1s/.*/$var/" $outputFile
 
 if [[ $(head -1 $configFile) != $(head -1 $outputFile) ]]; then
-        err_report "l'entete est different" 1
+	err_report "l'entete est different" 1
 fi
+
+backup=/backup/$(date +%Y%m%d%H%M)
+mkdir -p $backup
+
+info_report  "Backup de la configuration de Pfsense $backup"
+cp $configFile  $backup/$(basename $configFile).origin
 
 if [[ $(diff $configFile $outputFile -u) != "" ]];
 then
 
-        info_report  "Debut de la mise a jour de la conf Pfsense"
-        backup=/backup/$(date +%Y%m%d%H%M)
-        mkdir -p $backup
-        cp $configFile  $backup/$(basename $configFile).origin
-        cp $outputFile  $backup/$(basename $outputFile).upload
-        cat  $outputFile | ssh $sshpass "cat > /cf/conf/config.xml"
-        ssh $sshpass "rm /tmp/config.cache"
-        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh stop"
-        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh start"
-        ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh status"
-        info_report  "Fin de la mise a jour de la conf Pfsense"
+	info_report  "Debut de la mise a jour de la configuation de Pfsense : $outputFile"
+  cp $outputFile  $backup/$(basename $outputFile).upload
+	cat  $outputFile | ssh $sshpass "cat > /cf/conf/config.xml"
+	ssh $sshpass "rm /tmp/config.cache"
+  info_report  "Relance de HA Proxy"
+	ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh stop"
+	ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh start"
+	ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh status"
+	info_report  "Fin de la mise a jour de la conf Pfsense"
 fi
