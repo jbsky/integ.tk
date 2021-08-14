@@ -1,0 +1,98 @@
+#!/bin/bash
+# Ce script a besoin de Python3 et de lxml
+#
+# <alias>
+#         <name>gateway</name>
+#         <type>host</type>
+#         <address>86.211.71.44</address>
+# => pip3 install lxml
+# 2 paramètres en entrée
+# alias="$1"
+# ip="$2
+# Exemple d'appel:
+# /usr/local/sbin/update-pfsense-alias.sh gateway $(curl api.ipify.org)
+##################### Partie à configurer #####################
+sshpass='root@pfsense.localdomain'
+############################# Fin #############################
+alias="$1"
+ip="$2"
+info_report() {
+MSG="[Info] $1"
+echo $MSG
+logger $MSG
+}
+
+err_report() {
+MSG="[Err] $1"
+echo $MSG
+logger $MSG
+}
+info_report  "alias: $1 => ip: $ip"
+
+backup=/backup/$(date +%Y%m%d%H%M)
+mkdir -p $backup
+
+configFile="/tmp/config.xml"
+info_report  "Backup de la configuration de Pfsense $backup"
+
+outputFile="/tmp/output.xml"
+ssh $sshpass cat /cf/conf/config.xml > $configFile
+cp $configFile  $backup/$(basename $configFile).origin
+
+cp $configFile $outputFile
+
+python3 - << EOF
+import lxml.etree
+parser = lxml.etree.XMLParser(strip_cdata=False)
+
+""" Pass bash var """
+outputFile="$outputFile"
+alias="$alias"
+ip="$ip"
+
+def alias_replace(root):
+  for i in range(len(root)):
+    if root[i].tag == 'aliases':
+      for j in range(len(root[i])):
+        for k in range(len(root[i][j])):
+          if root[i][j][k].tag == "name" and root[i][j][k].text == alias:
+            for l in range(len(root[i][j])):
+              if root[i][j][l].tag == "address":
+                root[i][j][l].text = ip
+
+
+def cleanNode(root):
+  if len(root) > 0:
+    for i in range(len(root)):
+      if len(root[i]) > 0 :
+        cleanNode(root[i])
+      if root[i].text is None:
+        root[i].text = ""
+
+with open(outputFile, encoding="utf8") as f:
+  XML = lxml.etree.parse(f, parser)
+  root = XML.getroot()
+  alias_replace(root)
+  cleanNode(root)
+  XML.write(outputFile, xml_declaration=True)
+EOF
+
+# Format XML comme
+var=$(head -1 $configFile)
+sed -i "1s/.*/$var/" $outputFile
+
+echo "" >> $outputFile
+
+if [[ $(diff $configFile $outputFile -u) != "" ]];
+then
+
+	info_report  "Debut de la mise a jour de la conf Pfsense"
+  namefile=$(date +%Y%m%d%H%M).patch
+  diff $configFile $outputFile -u > $namefile
+	cp $outputFile  $backup/$(basename $outputFile).upload
+  mv $namefile $backup/
+	cat  $outputFile | ssh $sshpass "cat > /cf/conf/config.xml"
+	ssh $sshpass "rm /tmp/config.cache"
+	ssh $sshpass "/etc/rc.filter_configure"
+	info_report  "Fin de la mise a jour de la conf Pfsense"
+fi
