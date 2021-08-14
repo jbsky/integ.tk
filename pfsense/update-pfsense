@@ -31,11 +31,18 @@ echo $MSG
 logger $MSG
 }
 
-configFile=/tmp/config.xml
-outputFile=/tmp/output.xml
+backup=/backup/$(date +%Y%m%d%H%M)
+mkdir -p $backup
 
+configFile="/tmp/config.xml"
+info_report  "Backup de la configuration de Pfsense $backup"
+
+outputFile="/tmp/output.xml"
 ssh $sshpass cat /cf/conf/config.xml > $configFile
+cp $configFile  $backup/$(basename $configFile).origin
+
 cp $configFile $outputFile
+
 for d in $list
 do
 
@@ -66,18 +73,6 @@ def cert_replace(root):
               if root[i][j].tag == "crt":
                 root[i][j].text = "$chain64"
 
-with open(r'$outputFile', encoding="utf8") as f:
-  XML = lxml.etree.parse(f, parser)
-  root = XML.getroot()
-  cert_replace(root)
-  XML.write("$outputFile", xml_declaration=True)
-EOF
-done
-
-python3 - << EOF
-import lxml.etree
-parser = lxml.etree.XMLParser(strip_cdata=False)
-
 def cleanNode(root):
   if len(root) > 0:
     for i in range(len(root)):
@@ -89,32 +84,23 @@ def cleanNode(root):
 with open(r'$outputFile', encoding="utf8") as f:
   XML = lxml.etree.parse(f, parser)
   root = XML.getroot()
+  cert_replace(root)
   cleanNode(root)
   XML.write("$outputFile", xml_declaration=True)
+
 EOF
 
-# Ajout de \n a la fin du fichier
-echo "" >> $outputFile
-
 # Format XML comme
-var='<?xml version="1.0"?>'
+var=$(head -1 $configFile)
 sed -i "1s/.*/$var/" $outputFile
 
-if [[ $(head -1 $configFile) != $(head -1 $outputFile) ]]; then
-	err_report "l'entete est different" 1
-fi
-
-backup=/backup/$(date +%Y%m%d%H%M)
-mkdir -p $backup
-
-info_report  "Backup de la configuration de Pfsense $backup"
-cp $configFile  $backup/$(basename $configFile).origin
+echo "" >> $outputFile
 
 if [[ $(diff $configFile $outputFile -u) != "" ]];
 then
 
 	info_report  "Debut de la mise a jour de la conf Pfsense"
-  cp $outputFile  $backup/$(basename $outputFile).upload
+	cp $outputFile  $backup/$(basename $outputFile).upload
 	cat  $outputFile | ssh $sshpass "cat > /cf/conf/config.xml"
 	ssh $sshpass "rm /tmp/config.cache"
 	ssh $sshpass "/usr/local/etc/rc.d/haproxy.sh stop"
