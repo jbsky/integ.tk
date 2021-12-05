@@ -1,0 +1,76 @@
+#!/bin/ash -x
+cat << EOF > /etc/apk/repositories
+#/media/cdrom/apks
+http://dl-cdn.alpinelinux.org/alpine/v3.15/main
+http://dl-cdn.alpinelinux.org/alpine/v3.15/community
+http://dl-cdn.alpinelinux.org/alpine/edge/main
+http://dl-cdn.alpinelinux.org/alpine/edge/community
+http://dl-cdn.alpinelinux.org/alpine/edge/testing
+EOF
+
+
+apk add --no-cache qemu-guest-agent
+rc-update add local default
+
+cat << EOF >/etc/local.d/Qemu.start
+#!/bin/sh
+qemu-ga -d -p /dev/vport1p1
+EOF
+chmod +x /etc/local.d/Qemu.start
+
+
+apk add --no-cache kubeadm kubectl kubelet ip6tables
+
+cat <<EOF > /etc/modules-load.d/containerd.conf
+overlay
+br_netfilter
+EOF
+
+# Setup required sysctl params, these persist across reboots.
+cat <<EOF  > /etc/sysctl.d/99-kubernetes-cri.conf
+net.bridge.bridge-nf-call-iptables  = 1
+net.ipv4.ip_forward                 = 1
+net.bridge.bridge-nf-call-ip6tables = 1
+EOF
+
+# run at boot
+rc-update add kubelet default
+
+apk add --no-cache containerd
+mkdir -p /etc/containerd
+containerd config default /etc/containerd/config.toml
+
+rc-update add containerd
+
+cp /etc/fstab /root/fstab.$(date +%Y%M%d%H%m%s)
+sed -i '/.swap./s/^/#/' /etc/fstab
+
+
+mkdir -p /etc/kubernetes/manifests
+
+
+cat << EOT > mkworker.sh
+cat << EOF > /etc/hosts
+127.0.0.1 worker\${1}.jbsky.fr worker\${1} localhost.localdomain localhost
+::1 localhost localhost.localdomain
+172.17.255.202 worker1.jbsky.fr worker1
+172.17.255.203 worker2.jbsky.fr worker2
+172.17.255.204 worker3.jbsky.fr worker3
+172.17.255.201 master.jbsky.fr master
+EOF
+
+echo worker\${1}.jbsky.fr > /etc/hostname
+
+sed -i "s/172.17.255.201/172.17.255.20\$((\${1} + 1))/g" /etc/network/interfaces
+EOT
+cat << EOF > /etc/apk/repositories
+#/media/cdrom/apks
+http://dl-cdn.alpinelinux.org/alpine/v3.15/main
+# http://dl-cdn.alpinelinux.org/alpine/v3.15/community
+#http://dl-cdn.alpinelinux.org/alpine/edge/main
+#http://dl-cdn.alpinelinux.org/alpine/edge/community
+#http://dl-cdn.alpinelinux.org/alpine/edge/testing
+EOF
+
+
+echo "@reboot /bin/mount --make-rshared /" >> /etc/crontabs/root
